@@ -1,81 +1,103 @@
-// The 'token_4554' program.
-program token_4554.aleo {
-    mapping balance: address => u128;
-
-    record Token{
+import tyron.leo;
+// Using basic_bank as an example
+//program basic_bank.aleo {
+program tyron_ssi.aleo{
+    // A token, issued by a bank.
+    // - 'owner'  : The address of the account that owns the record associated with this token.
+    // - 'amount' : The amount of tokens owned by the account.
+    record Token {
         owner: address,
-        balance: u128
+        amount: u64,
     }
 
-    transition mint(amount: u128) -> Token {
-        return Token{
-            owner: self.caller,
-            balance: amount
+    // An on-chain mapping, storing the amount of tokens owned by each account
+    // The account is stored as a to preserve user privacy.
+    mapping balances: field => u64;
+
+    // Returns a new Token.
+    // - `owner` : The address of the account to issue the token to.
+    // - `amount`: The amount of tokens to issue.
+    // Requires that the function caller is the bank.
+
+    // Using Tyron instead of a hardcoded address.
+    // The bank's address is aleo1t0uer3jgtsgmx5tq6x6f9ecu8tr57rzzfnc2dgmcqldceal0ls9qf6st7a.
+    transition issue(owner: address, amount: u64) -> Token {
+        //assert_eq(self.caller, aleo1t0uer3jgtsgmx5tq6x6f9ecu8tr57rzzfnc2dgmcqldceal0ls9qf6st7a);
+        tyron.leo/is_signer();
+        return Token {
+            owner: owner,
+            amount: amount,
         };
     }
 
-    transition transfer(receiver: address, amount: u128, input: Token) -> (Token, Token){
-        let difference: u128 = input.balance - amount;
-        let ori_owner: Token = Token{
-            owner: self.caller,
-            balance: difference
+    // Deposits some amount of money into the bank.
+    // Returns a new Token with the remaining amount of money.
+    // - `token` : A record containing tokens to deposit.
+    // - `amount`: The amount of tokens to deposit.
+    transition deposit(token: Token, amount: u64) -> Token {
+        let difference: u64 = token.amount - amount;
+
+        let remaining: Token = Token {
+            owner: token.owner,
+            amount: difference,
         };
 
-        let recipient: Token = Token{
-            owner: receiver,
-            balance: amount
+        // Compute the hash of the token owner.
+        let hash: field = BHP256::hash_to_field(token.owner);
+
+        return remaining then finalize(hash, amount);
+    }
+
+    // Updates on-chain state by the amount of tokens deposited.
+    // - `hash`  : The hash of the token owner.
+    // - `amount`: The amount of tokens that were deposited.
+    finalize deposit(hash: field, amount: u64) {
+        let current_amount: u64 = Mapping::get_or_use(balances, hash, 0u64);
+        Mapping::set(balances, hash, current_amount + amount);
+    }
+
+    // Returns a new Token containing the amount of money withdrawn.
+    // - `recipient`: The address of the account to withdraw the tokens to.
+    // - `amount`   : The amount of tokens to withdraw.
+    // - `rate`     : The compound interest rate.
+    // - `periods`  : The number of periods to compound the interest over.
+    // Requires that the function caller is the bank.
+    transition withdraw(recipient: address, amount: u64, rate: u64, periods: u64) -> Token {
+        assert_eq(self.caller, aleo1t0uer3jgtsgmx5tq6x6f9ecu8tr57rzzfnc2dgmcqldceal0ls9qf6st7a);
+        
+        let hash: field = BHP256::hash_to_field(recipient);
+
+        let total: u64 = calculate_interest(amount, rate, periods);
+
+        let token: Token = Token {
+            owner: recipient,
+            amount: total,
         };
-        return(ori_owner, recipient);
+
+        return token then finalize(hash, amount);
     }
 
-    //internal function, procedure
-    // function helper()
-
-    transition transfer_private_to_public(receiver: address, amount: u128, input: Token) -> Token {
-        let difference: u128 = input.balance - amount;
-        let ori_owner: Token = Token{
-            owner: self.caller,
-            balance: difference
-        };
-        return then finalize(receiver, amount);
+    // Updates on-chain state by the amount of tokens withdrawn.
+    // - `hash`  : The hash of the token owner.
+    // - `amount`: The amount of tokens that were withdrawn.
+    finalize withdraw(hash: field, amount: u64) {
+        let current_amount: u64 = Mapping::get_or_use(balances, hash, 0u64);
+        Mapping::set(balances, hash, current_amount - amount);
     }
 
-    //on-chain execution
-    finalize transfer_private_to_public(receiver: address, amount: u128){
-        let prev_balance: u128 = Mapping::get_or_use(balance, receiver, 0u128); // 0 as default if receiver is empty
-        Mapping::set(balance, receiver, prev_balance+amount);
-    }
+    // Returns the total amount of tokens after compounding interest.
+    // - `principal`: The amount of tokens to compound interest over.
+    // - `rate`     : The compound interest rate.
+    // - `periods`  : The number of periods to compound the interest over.
+    function calculate_interest(principal: u64, rate: u64, periods: u64) -> u64 {
+        let amount: u64 = principal;
 
-    transition transfer_public(receiver: address, amount: u128){
-        return then finalize (self.caller, receiver, amount);
-    }
+        for i:u64 in 0u64..100u64 {
+            if i < periods {
+                amount += (amount * rate) / 10000u64;
+            }
+        }
 
-    finalize transfer_public(sender: address, receiver: address, amount: u128){
-        let sender_balance: u128 = Mapping::get(balance, sender);
-        let difference: u128 = sender_balance - amount;
-        Mapping::set(balance, sender, difference);
-
-        let receiver_bal: u128 = Mapping::get(balance, receiver);
-        Mapping::set(balance, sender, receiver_bal+amount);
-    }
-
-//transfer from public view to private view
-    transition transfer_public_to_private(receiver: address, amount: u128)->Token{
-        return Token{
-            owner: receiver,
-            balance: amount
-        } then finalize (self.caller, amount);
-    }
-
-    finalize transfer_public_to_private(sender: address, amount: u128){
-        let prev_bal: u128 = Mapping::get(balance, sender);
-        Mapping::set(balance, sender, prev_bal-amount);
-    }
-
-    transition join(input: Token, input_two: Token) -> Token{
-        return Token{
-            owner: self.caller,
-            balance: input.balance + input_two.balance
-        };
+        return amount;
     }
 }
